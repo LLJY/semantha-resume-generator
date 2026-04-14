@@ -10,6 +10,7 @@ This public repo intentionally excludes private resume corpus files, user profil
 - Uses markdown project records as the source of truth
 - Supports multiple role-family resume variants
 - Emits modern LaTeX output
+- Preserves the layered `selected.json -> resume-plan.json -> tex/pdf` flow
 
 ## Expected input
 
@@ -54,15 +55,31 @@ Useful optional project frontmatter fields:
 
 ## Included pipeline stub
 
-`rank_projects.py` is a dependency-free first cut of the ranking layer.
+`rank_projects.py` now uses a hybrid ranker: lexical TF-IDF, JD chunking, keyword overlap, existing heuristics, optional SentenceTransformers embeddings, and optional cross-encoder reranking.
+
+Install semantic extras only if you want dense retrieval/reranking locally:
+
+```bash
+uv pip install -r requirements-semantic.txt
+```
+
+Optional local JD keyword expansion can be enabled with Ollama:
+
+```bash
+export SEMANTHA_ENABLE_OLLAMA_EXPANSION=1
+export SEMANTHA_OLLAMA_URL=http://localhost:11434
+export SEMANTHA_OLLAMA_MODEL=llama3.2
+```
 
 `sync_projects.py` copies repo-local `resume-project.md` files into the generator's central `data/projects/` directory.
 
 `sync_context.py` copies manual user-context overlays into `data/context/`.
 
-`build_resume_prompt.py` builds the broad ranked `selected.json` candidate bundle and emits an LLM-ready prompt bundle containing the target, profile, selected project summaries, and LaTeX template.
+`build_resume_prompt.py` builds the broad ranked `selected.json` candidate bundle, writes a sibling `*-match-report.json` score breakdown artifact, and emits an LLM-ready prompt bundle containing the target, profile, selected project summaries, and LaTeX template.
 
 `draft_resume_tex.py` renders a deterministic `.tex` draft from either a `resume-plan.json` editorial plan or a legacy `selected.json` bundle, using synthesis and suggested bullet points where available.
+
+`semantha_tailor.py` is the convenience one-shot CLI. It preserves the internal layered flow, but runs the default bundle -> plan -> render -> compile path in one command.
 
 ## SEmantha MCP server
 
@@ -103,7 +120,7 @@ python3 semantha_server.py
   - `semantha://families/{family_id}`
   - `semantha://targets/index`
   - `semantha://outputs/index`
-  - `semantha://outputs/{label}/{kind}` where `kind` is `selected`, `plan`, `prompt`, `tex`, or `pdf`
+  - `semantha://outputs/{label}/{kind}` where `kind` is `selected`, `report`, `plan`, `prompt`, `tex`, or `pdf`
 
 - **Prompts** for:
   - end-to-end resume tailoring
@@ -126,11 +143,14 @@ It:
 
 - parses markdown project records with simple YAML frontmatter
 - builds a weighted TF-IDF representation over title, summary, keywords, and bullet sections
+- chunks long job descriptions for more stable matching
+- optionally adds SentenceTransformers embeddings and cross-encoder reranking when those dependencies are installed
 - optionally folds in context overlays so ranking can reflect why a project mattered, not just what was built
 - carries full context overlays into the LLM prompt bundle so drafting can use motive, trigger, and stakes
-- computes cosine similarity against a query or target file
-- applies small heuristic boosts/penalties for role-family fit, authorship confidence, and evidence strength
-- writes both markdown and JSON ranking outputs
+- computes lexical + semantic similarity against a query or target file
+- applies heuristic boosts/penalties for role-family fit, authorship confidence, and evidence strength
+- emits score decomposition and match-report artifacts
+- estimates project-section line pressure and warns about likely bullet or summary wraps
 
 Example:
 
@@ -175,6 +195,15 @@ python3 draft_resume_tex.py \
   --profile-file ../portfolio/resume/profile.md \
   --template-file templates/modern-onepage.tex \
   --output-tex output/linux-systems.tex \
+  --max-projects 3 \
+  --max-bullets-per-project 1
+
+python3 semantha_tailor.py \
+  --label linux-systems-quick \
+  --target-file ../portfolio/resume/linux-systems-target.md \
+  --role-family linux-systems \
+  --top 6 \
+  --plan-top-n 3 \
   --max-projects 3 \
   --max-bullets-per-project 1
 ```

@@ -9,6 +9,8 @@ from typing import Any
 from rank_projects import (
     attach_family,
     attach_context,
+    build_match_report,
+    extract_ranking_metadata,
     load_record,
     load_family_map,
     normalize_label,
@@ -18,6 +20,8 @@ from rank_projects import (
     should_include_record,
     split_frontmatter,
 )
+from resume_budget import estimate_project_budget, estimate_resume_budget
+from semantic_features import SemanticConfig
 
 
 RESUME_PLAN_SCHEMA_VERSION = "resume-plan/v1"
@@ -77,12 +81,16 @@ def build_project_bundle(
         record = load_record(projects_dir / Path(item["path"]).name)
         context_frontmatter: dict[str, Any] = {}
         context_sections: dict[str, str] = {}
-        context_path = context_dir / f"{item['project_id']}.md"
-        if context_path.exists():
-            context_frontmatter, context_body = split_frontmatter(
-                context_path.read_text(encoding="utf-8")
-            )
-            context_sections = parse_sections(context_body)
+        for context_path in [
+            context_dir / f"{item['project_id']}.md",
+            context_dir / f"{Path(item['path']).stem}.md",
+        ]:
+            if context_path.exists():
+                context_frontmatter, context_body = split_frontmatter(
+                    context_path.read_text(encoding="utf-8")
+                )
+                context_sections = parse_sections(context_body)
+                break
         project = {
             "project_id": item["project_id"],
             "display_name": item["display_name"],
@@ -124,7 +132,20 @@ def build_project_bundle(
             ),
             "caveats": extract_list(record.sections.get("caveats", "")),
             "role_family_targets": record.frontmatter.get("role_family_targets", []),
+            "lexical_score": item.get("lexical_score", 0.0),
+            "semantic_score": item.get("semantic_score", 0.0),
+            "chunk_score": item.get("chunk_score", 0.0),
+            "keyword_score": item.get("keyword_score", 0.0),
+            "heuristic_score": item.get("heuristic_score", 0.0),
+            "rerank_score": item.get("rerank_score", 0.0),
+            "score_breakdown": item.get("score_breakdown", {}),
+            "match_report": item.get("match_report", {}),
+            "ranking_diagnostics": item.get("ranking_diagnostics", []),
         }
+        chosen_bullets = (
+            project["suggested_bullet_points"] or project["bullet_candidates"][:3]
+        )
+        project["budget_estimate"] = estimate_project_budget(project, chosen_bullets)
         bundle.append(project)
         if family_id:
             seen_families.add(family_id)
@@ -151,6 +172,23 @@ def load_selected_projects(selected_file: Path) -> list[dict[str, Any]]:
         if isinstance(selected, list):
             return selected
     raise ValueError("selected_file must contain a selected project list")
+
+
+def select_ranked_results_for_bundle_report(
+    ranked: list[dict[str, Any]], selected_projects: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    ranked_index = {
+        str(item.get("project_id") or "").strip(): item
+        for item in ranked
+        if str(item.get("project_id") or "").strip()
+    }
+    ordered: list[dict[str, Any]] = []
+    for project in selected_projects:
+        project_id = str(project.get("project_id") or "").strip()
+        matched = ranked_index.get(project_id)
+        if matched is not None:
+            ordered.append(matched)
+    return ordered
 
 
 def validate_plan_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
@@ -310,6 +348,25 @@ def render_prompt(
             )
         if project["family_name"]:
             lines.append(f"- Project family: {project['family_name']}")
+        if project.get("score_breakdown"):
+            breakdown = project["score_breakdown"]
+            lines.append(
+                "- Score breakdown: "
+                f"lexical={breakdown.get('lexical', 0.0)}, "
+                f"embedding={breakdown.get('embedding', 0.0)}, "
+                f"chunk={breakdown.get('job_chunk', 0.0)}, "
+                f"keyword={breakdown.get('keyword_overlap', 0.0)}, "
+                f"heuristic={breakdown.get('heuristic_adjustment', 0.0)}, "
+                f"cross-encoder={breakdown.get('cross_encoder', 0.0)}"
+            )
+        keyword_hits = project.get("match_report", {}).get("keyword_hits") or []
+        if keyword_hits:
+            lines.append(f"- Keyword hits: {', '.join(keyword_hits)}")
+        missing_keywords = project.get("match_report", {}).get("missing_keywords") or []
+        if missing_keywords:
+            lines.append(
+                f"- Missing target keywords: {', '.join(missing_keywords[:8])}"
+            )
         if project["family_role"]:
             lines.append(f"- Family role: {project['family_role']}")
         if project["cosine_title"]:
@@ -366,6 +423,9 @@ def render_prompt(
             lines.append("- Caveats:")
             for caveat in project["caveats"]:
                 lines.append(f"  - {caveat}")
+        budget_estimate = project.get("budget_estimate") or {}
+        if budget_estimate.get("warnings"):
+            lines.append(f"- Layout warnings: {', '.join(budget_estimate['warnings'])}")
         lines.append("")
 
     lines.append("## LaTeX template to fill")
@@ -417,6 +477,7 @@ def main() -> int:
         if (record := load_record(path)) and should_include_record(record)
     ]
     ranked = rank_projects(records, target_text, args.role_family)
+    metadata = extract_ranking_metadata(ranked, target_text)
     selected_projects = build_project_bundle(
         ranked,
         projects_dir,
@@ -424,6 +485,7 @@ def main() -> int:
         top_limit=args.top,
         unique_families=not args.allow_family_duplicates,
     )
+    report_results = select_ranked_results_for_bundle_report(ranked, selected_projects)
 
     profile_frontmatter, profile_sections, _ = load_profile(args.profile_file)
     template_text = args.template_file.read_text(encoding="utf-8")
@@ -432,6 +494,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     prompt_path = output_dir / f"{args.label}-prompt.md"
     selected_path = output_dir / f"{args.label}-selected.json"
+    report_path = output_dir / f"{args.label}-match-report.json"
 
     prompt_text = render_prompt(
         label=args.label,
@@ -444,9 +507,31 @@ def main() -> int:
     )
     prompt_path.write_text(prompt_text, encoding="utf-8")
     selected_path.write_text(json.dumps(selected_projects, indent=2), encoding="utf-8")
+    semantic_config = SemanticConfig.from_env()
+    match_report = build_match_report(
+        label=args.label,
+        target_text=target_text,
+        role_family=args.role_family,
+        semantic_config=semantic_config,
+        target_keywords=metadata["target_keywords"],
+        expanded_keywords=metadata["expanded_keywords"],
+        diagnostics=metadata["diagnostics"],
+        results=report_results,
+    )
+    match_report["selected_bundle_budget"] = estimate_resume_budget(
+        [
+            {
+                "project_id": project["project_id"],
+                "budget": project.get("budget_estimate") or {},
+            }
+            for project in selected_projects
+        ]
+    )
+    report_path.write_text(json.dumps(match_report, indent=2), encoding="utf-8")
 
     print(prompt_path)
     print(selected_path)
+    print(report_path)
     return 0
 
 

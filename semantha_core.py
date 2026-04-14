@@ -20,8 +20,10 @@ from build_resume_prompt import (
     load_profile,
     load_selected_projects,
     render_prompt,
+    select_ranked_results_for_bundle_report,
 )
 from draft_resume_tex import (
+    analyze_render_budget,
     choose_project_bullets,
     choose_project_summary,
     latex_escape,
@@ -42,6 +44,8 @@ from rank_projects import (
     ProjectRecord,
     attach_context,
     attach_family,
+    build_match_report,
+    extract_ranking_metadata,
     load_family_map,
     load_record,
     load_target_text,
@@ -51,6 +55,8 @@ from rank_projects import (
     should_include_record,
     split_frontmatter,
 )
+from resume_budget import estimate_resume_budget
+from semantic_features import SemanticConfig
 from sync_context import extract_project_id as extract_context_project_id
 from sync_projects import extract_project_id as extract_project_record_id
 
@@ -474,8 +480,16 @@ class SemanthaWorkspace:
         target_path = (
             _resolve_existing_path(
                 target_file,
-                [self.paths.portfolio_resume_dir],
-                [self.paths.workspace_root, self.paths.portfolio_resume_dir],
+                [
+                    self.paths.portfolio_resume_dir,
+                    self.paths.generator_dir,
+                    self.paths.workspace_root,
+                ],
+                [
+                    self.paths.generator_dir,
+                    self.paths.workspace_root,
+                    self.paths.portfolio_resume_dir,
+                ],
             )
             if target_file
             else None
@@ -491,10 +505,22 @@ class SemanthaWorkspace:
                 f"No eligible markdown project files found in {self.paths.projects_dir}"
             )
         ranked = rank_projects(records, combined_target, role_family)[: max(1, top)]
+        metadata = extract_ranking_metadata(ranked, combined_target)
+        match_report = build_match_report(
+            label="semantic-search",
+            target_text=combined_target,
+            role_family=role_family,
+            semantic_config=SemanticConfig.from_env(),
+            target_keywords=metadata["target_keywords"],
+            expanded_keywords=metadata["expanded_keywords"],
+            diagnostics=metadata["diagnostics"],
+            results=ranked,
+        )
         return {
             "target_text": combined_target,
             "role_family": role_family,
             "results": ranked,
+            "match_report": match_report,
         }
 
     def inspect_project(self, project_id: str) -> dict[str, Any]:
@@ -630,8 +656,16 @@ class SemanthaWorkspace:
         target_path = (
             _resolve_existing_path(
                 target_file,
-                [self.paths.portfolio_resume_dir],
-                [self.paths.workspace_root, self.paths.portfolio_resume_dir],
+                [
+                    self.paths.portfolio_resume_dir,
+                    self.paths.generator_dir,
+                    self.paths.workspace_root,
+                ],
+                [
+                    self.paths.generator_dir,
+                    self.paths.workspace_root,
+                    self.paths.portfolio_resume_dir,
+                ],
             )
             if target_file
             else None
@@ -648,6 +682,7 @@ class SemanthaWorkspace:
                 f"No eligible markdown project files found in {self.paths.projects_dir}"
             )
         ranked = rank_projects(records, combined_target, role_family)
+        metadata = extract_ranking_metadata(ranked, combined_target)
         selected_projects = build_project_bundle(
             ranked,
             self.paths.projects_dir,
@@ -655,11 +690,15 @@ class SemanthaWorkspace:
             top_limit=max(1, top),
             unique_families=not allow_family_duplicates,
         )
+        report_results = select_ranked_results_for_bundle_report(
+            ranked, selected_projects
+        )
         profile_frontmatter, profile_sections, _ = load_profile(self.paths.profile_file)
         template_text = self.paths.template_file.read_text(encoding="utf-8")
         label = normalize_label(label or "resume")
         prompt_path = self.paths.output_dir / f"{label}-prompt.md"
         selected_path = self.paths.output_dir / f"{label}-selected.json"
+        report_path = self.paths.output_dir / f"{label}-match-report.json"
         self.paths.output_dir.mkdir(parents=True, exist_ok=True)
         prompt_text = render_prompt(
             label=label,
@@ -674,11 +713,32 @@ class SemanthaWorkspace:
         selected_path.write_text(
             json.dumps(selected_projects, indent=2), encoding="utf-8"
         )
+        match_report = build_match_report(
+            label=label,
+            target_text=combined_target,
+            role_family=role_family,
+            semantic_config=SemanticConfig.from_env(),
+            target_keywords=metadata["target_keywords"],
+            expanded_keywords=metadata["expanded_keywords"],
+            diagnostics=metadata["diagnostics"],
+            results=report_results,
+        )
+        match_report["selected_bundle_budget"] = estimate_resume_budget(
+            [
+                {
+                    "project_id": str(project.get("project_id") or ""),
+                    "budget": project.get("budget_estimate") or {},
+                }
+                for project in selected_projects
+            ]
+        )
+        report_path.write_text(json.dumps(match_report, indent=2), encoding="utf-8")
         return {
             "label": label,
             "target_text": combined_target,
             "prompt_path": str(prompt_path),
             "selected_path": str(selected_path),
+            "match_report_path": str(report_path),
             "selected_projects": selected_projects,
         }
 
@@ -967,6 +1027,13 @@ class SemanthaWorkspace:
         rendered = render_template(template_text, mapping)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(rendered, encoding="utf-8")
+        budget = analyze_render_budget(
+            selected,
+            max_projects=max_projects,
+            max_bullets=max_bullets_per_project,
+            unique_families=not allow_family_duplicates,
+            authoritative_order=authoritative_order,
+        )
         return {
             "label": normalize_label(label),
             "selected_path": str(selected_path),
@@ -974,6 +1041,7 @@ class SemanthaWorkspace:
             if (resume_plan_file or auto_plan_path)
             else None,
             "tex_path": str(output_path),
+            "budget": budget,
         }
 
     def compile_resume_pdf(
@@ -1308,7 +1376,7 @@ class SemanthaWorkspace:
                 "uri": "semantha://outputs/index",
                 "name": "Outputs Index",
                 "title": "Generated Outputs Index",
-                "description": "List of generated selected bundles, resume plans, prompts, TeX files, and PDFs.",
+                "description": "List of generated selected bundles, match reports, resume plans, prompts, TeX files, and PDFs.",
                 "mimeType": "application/json",
             },
             {
@@ -1348,7 +1416,7 @@ class SemanthaWorkspace:
                 "uriTemplate": "semantha://outputs/{label}/{kind}",
                 "name": "Generated Output",
                 "title": "Generated Output",
-                "description": "Read a generated selected bundle, resume plan, prompt, TeX, or PDF by label and kind.",
+                "description": "Read a generated selected bundle, match report, resume plan, prompt, TeX, or PDF by label and kind.",
             },
         ]
 
@@ -1422,6 +1490,7 @@ class SemanthaWorkspace:
             kind = unquote(path[1]).lower()
             suffix_map = {
                 "selected": f"{label}-selected.json",
+                "report": f"{label}-match-report.json",
                 "plan": f"{label}-resume-plan.json",
                 "prompt": f"{label}-prompt.md",
                 "tex": f"{label}.tex",

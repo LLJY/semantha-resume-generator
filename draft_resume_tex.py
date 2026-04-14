@@ -12,6 +12,7 @@ from build_resume_prompt import (
     load_profile,
     load_selected_projects,
 )
+from resume_budget import estimate_project_budget, estimate_resume_budget
 
 
 LATEX_ESCAPES = {
@@ -316,13 +317,12 @@ def render_projects(
     unique_families: bool,
     authoritative_order: bool = False,
 ) -> str:
-    projects = (
-        selected
-        if authoritative_order
-        else select_projects(
+    if authoritative_order:
+        projects = selected[:max_projects]
+    else:
+        projects = select_projects(
             selected, max_projects=max_projects, unique_families=unique_families
         )
-    )
     entries: list[str] = []
     for project in projects:
         title = latex_escape(visible_project_title(project))
@@ -341,6 +341,37 @@ def render_projects(
             rf"\resumeProject{{{title}}}{{{subtitle}}}{{{summary}}}{{{body_text}}}"
         )
     return "\n".join(entries).strip()
+
+
+def analyze_render_budget(
+    selected: list[dict[str, Any]],
+    *,
+    max_projects: int,
+    max_bullets: int,
+    unique_families: bool,
+    authoritative_order: bool = False,
+) -> dict[str, Any]:
+    projects = (
+        selected
+        if authoritative_order
+        else select_projects(
+            selected, max_projects=max_projects, unique_families=unique_families
+        )
+    )
+    entries = []
+    for project in projects[:max_projects]:
+        bullets = choose_project_bullets(project, max_bullets=max_bullets)
+        entries.append(
+            {
+                "project_id": str(project.get("project_id") or ""),
+                "display_name": visible_project_title(project),
+                "budget": estimate_project_budget(project, bullets),
+            }
+        )
+    return {
+        "projects": entries,
+        "summary": estimate_resume_budget(entries),
+    }
 
 
 def replace_section(template: str, section_name: str, content: str) -> str:
@@ -475,6 +506,15 @@ def main() -> int:
     args.output_tex.parent.mkdir(parents=True, exist_ok=True)
     args.output_tex.write_text(rendered, encoding="utf-8")
     print(args.output_tex)
+    budget = analyze_render_budget(
+        selected,
+        max_projects=args.max_projects,
+        max_bullets=args.max_bullets_per_project,
+        unique_families=not args.allow_family_duplicates,
+        authoritative_order=authoritative_order,
+    )
+    if budget["summary"]["warnings"]:
+        print(json.dumps(budget["summary"], ensure_ascii=False))
     return 0
 
 
