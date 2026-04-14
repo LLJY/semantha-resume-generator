@@ -1,0 +1,105 @@
+\documentclass[10pt,letterpaper]{article}
+
+\usepackage{cmap}
+\usepackage[left=0.54in,right=0.54in,top=0.46in,bottom=0.50in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[scaled=0.94]{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+\usepackage{microtype}
+\usepackage[bookmarks=false,hidelinks]{hyperref}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{fontawesome5}
+\usepackage{etoolbox}
+\input{glyphtounicode}
+\pdfgentounicode=1
+
+\pagenumbering{gobble}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+\setlength{\tabcolsep}{0pt}
+\raggedright
+\urlstyle{same}
+
+\definecolor{Heading}{HTML}{0F172A}
+\definecolor{Accent}{HTML}{2563EB}
+\definecolor{Body}{HTML}{334155}
+\definecolor{Rule}{HTML}{CBD5E1}
+
+\setlist[itemize]{leftmargin=1.00em,label=\raisebox{0.18em}{\scriptsize\textbullet},itemsep=0.03em,topsep=0.01em,parsep=0pt,partopsep=0pt}
+
+\titleformat{\section}{\large\bfseries\color{Heading}}{}{0pt}{}[\vspace{0.14em}\color{Rule}\titlerule]
+\titlespacing*{\section}{0pt}{0.40em}{0.14em}
+
+\newcommand{\resumeHeader}[4]{%
+  \noindent
+  \begin{minipage}[t]{0.54\textwidth}
+    {\fontsize{21}{23}\selectfont\bfseries\color{Heading} #1\par}
+    \vspace{0.10em}
+    {\normalsize\color{Accent} #2\par}
+  \end{minipage}\hfill
+  \begin{minipage}[t]{0.42\textwidth}
+    \raggedleft
+    {\footnotesize\color{Body} #3\par}
+    \vspace{0.10em}
+    {\footnotesize\color{Body} #4\par}
+  \end{minipage}
+  \vspace{0.10em}
+}
+
+\newcommand{\resumeSubheading}[4]{%
+  \noindent
+  \begin{tabular*}{\textwidth}{@{}p{0.74\textwidth}@{\extracolsep{\fill}}>{\raggedleft\arraybackslash}p{0.22\textwidth}@{}}
+    {\bfseries\color{Heading} #1} & {\small\color{Body} #2} \\[-0.22em]
+  \end{tabular*}
+  \ifstrempty{#3}{}{{\small\itshape\color{Body} #3\par}\vspace{-0.04em}}
+  \ifstrempty{#4}{}{\vspace{0.005em}#4}
+  \vspace{0.00em}
+}
+
+\newcommand{\resumeProject}[4]{%
+  \noindent
+  \begin{tabular*}{\textwidth}{@{}p{0.72\textwidth}@{\extracolsep{\fill}}>{\raggedleft\arraybackslash}p{0.24\textwidth}@{}}
+    {\bfseries\color{Heading} #1} & {\footnotesize\color{Accent} #2} \\
+  \end{tabular*}
+  \ifstrempty{#3}{}{\vspace{0.01em}{\footnotesize\color{Accent!78!Heading} #3\par}}
+  \ifstrempty{#4}{}{\vspace{0.005em}{\footnotesize\color{Body} #4}}
+  \vspace{0.04em}
+}
+
+\begin{document}
+
+\resumeHeader{{{name}}}{{{headline}}}{{{social_row}}}{{{contact_row}}}
+
+\vspace{0.05em}
+
+{{#summary}}
+\section*{Summary}
+{\small\color{Body} {{summary}}}
+{{/summary}}
+
+{{#experience}}
+\section*{Experience}
+{\small\color{Body} {{experience}}}
+{{/experience}}
+
+{{#projects}}
+\section*{Technical Projects}
+{{projects}}
+{{/projects}}
+
+{{#education}}
+\section*{Education}
+{\small\color{Body} {{education}}}
+{{/education}}
+
+{{#skills}}
+\section*{Skills}
+{\footnotesize\color{Body} {{skills}}}
+{{/skills}}
+
+\end{document}
